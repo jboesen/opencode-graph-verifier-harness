@@ -22,6 +22,7 @@ BACKUP_DIR="$OPENCODE_DIR/backup-$(date +%Y%m%d-%H%M%S)"
 EXISTING_FILES=(
   "$OPENCODE_DIR/opencode.jsonc"
   "$OPENCODE_DIR/oh-my-opencode-slim.json"
+  "$OPENCODE_DIR/tui.json"
   "$OPENCODE_SLIM_DIR/orchestrator_append.md"
 )
 
@@ -52,8 +53,9 @@ fi
 echo "[3/7] Copying opencode config files..."
 cp "$SCRIPT_DIR/opencode/opencode.jsonc" "$OPENCODE_DIR/"
 cp "$SCRIPT_DIR/opencode/oh-my-opencode-slim.json" "$OPENCODE_DIR/"
+cp "$SCRIPT_DIR/opencode/tui.json" "$OPENCODE_DIR/"
 cp "$SCRIPT_DIR/opencode/oh-my-opencode-slim/orchestrator_append.md" "$OPENCODE_SLIM_DIR/"
-echo "  -> copied opencode.jsonc, oh-my-opencode-slim.json, orchestrator_append.md"
+echo "  -> copied opencode.jsonc, oh-my-opencode-slim.json, tui.json, orchestrator_append.md"
 
 # ---------------------------------------------------------------------------
 # 4. Create graph-verifier MCP directory and copy files

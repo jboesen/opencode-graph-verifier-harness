@@ -196,6 +196,12 @@ tmux attach -t opencode
 
 The config files use absolute paths (`/root/.local/...`) because opencode's MCP configuration does not expand `~` in command arrays. The install script copies files to these same absolute paths. If your home directory is not `/root` (e.g., `/home/yourname`), edit `~/.config/opencode/opencode.jsonc` and `~/.local/graph-verifier-mcp/run.sh` to use your actual home path.
 
+## Skills
+
+This harness relies on the **oh-my-opencode-slim** plugin, which provides several built-in skills. See [docs/skills.md](docs/skills.md) for the full reference.
+
+The skills (`reflect`, `simplify`, `worktrees`, `deepwork`, `clonedeps`, `codemap`) are fetched automatically from npm when the plugin loads — you do not need to copy them manually. The only custom prompt in this harness is `opencode/oh-my-opencode-slim/orchestrator_append.md`.
+
 ## License
 
 MIT
