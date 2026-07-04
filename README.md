@@ -1,206 +1,60 @@
-# opencode-graph-verifier-harness
-
-A self-contained **opencode orchestrator harness** that enforces **graph-first planning** via a **graph-verifier MCP server**, uses **Kimi K2.7 (OpenRouter)** as the orchestrator model and **Big Pickle** as the worker model, and dispatches **parallel background subagents**.
+# Graph Verifier MCP for OpenCode
 
 ## What This Is
 
-This harness packages the configuration, prompts, and tooling needed to run an opencode session that:
-
-- **Forces graph-first orchestration** — every non-trivial request must pass through the graph-verifier MCP before any subagent acts. You submit a dependency graph, get approved tickets, dispatch parallel background subagents, and report results back. No ticket = no dispatch.
-- **Uses Kimi K2.7 for orchestration** — the orchestrator model (`openrouter/moonshotai/kimi-k2.7-code`) handles planning, oversight, and reconciliation.
-- **Uses Big Pickle for execution** — all worker specialists (explorer, librarian, oracle, designer, fixer) use `opencode/big-pickle`.
-- **Manages work with beads** — a local MCP-based issue tracker (`beads-mcp`) for cross-session persistence.
+A **graph-verifier MCP server** that forces an OpenCode orchestrator to build a validated dependency graph before dispatching work, and to review lanes for continue/terminate decisions. Includes a prompt file that teaches the orchestrator how to use it.
 
 ## Prerequisites
 
-- **opencode** ≥ 1.17.13
-- **Python 3.12** (for the venv that hosts `fastmcp` and `beads-mcp`)
-- **pip** (for installing Python packages)
-- **API keys** set in your shell environment:
-  - `OPENROUTER_API_KEY` — for the orchestrator model (Kimi K2.7 via OpenRouter)
-  - `BIG_PICKLE_API_KEY` — for the worker model (Big Pickle)
-- **git** and **GitHub CLI (`gh`)** if you want the full workflow
+- **OpenCode** with oh-my-opencode-slim plugin (or any OpenCode setup where you can append a prompt and add an MCP server).
+- **Python 3.12+** with `fastmcp` installed.
 
-## Quick Install
+## Setup
 
-```bash
-git clone https://github.com/jboesen/opencode-graph-verifier-harness.git
-cd opencode-graph-verifier-harness
-./install.sh
-```
+1. Copy `mcp/graph-verifier/server.py` and `mcp/graph-verifier/run.sh` to a location on your machine (e.g. `~/.local/graph-verifier-mcp/`).
 
-Then set your API keys and start opencode.
+2. Make `run.sh` executable:
+   ```bash
+   chmod +x ~/.local/graph-verifier-mcp/run.sh
+   ```
 
-## Manual Install
+3. Add the MCP server to your `opencode.json` or `opencode.jsonc`:
+   ```json
+   "mcp": {
+     "graph-verifier": {
+       "type": "local",
+       "command": ["/path/to/graph-verifier-mcp/run.sh"],
+       "enabled": true
+     }
+   }
+   ```
 
-If you prefer to install step by step:
+4. Append the contents of `prompts/orchestrator-graph-verifier.md` to your orchestrator system prompt. If using oh-my-opencode-slim, place it at `~/.config/opencode/oh-my-opencode-slim/orchestrator_append.md`.
 
-### 1. Copy opencode config files
+## How It Works
 
-```bash
-mkdir -p ~/.config/opencode/oh-my-opencode-slim
-cp opencode/opencode.jsonc ~/.config/opencode/
-cp opencode/oh-my-opencode-slim.json ~/.config/opencode/
-cp opencode/oh-my-opencode-slim/orchestrator_append.md ~/.config/opencode/oh-my-opencode-slim/
-```
+The graph-verifier server exposes five tools that form a **mandatory pre-dispatch protocol**:
 
-### 2. Set up the graph-verifier MCP
-
-```bash
-mkdir -p ~/.local/graph-verifier-mcp
-cp mcp/graph-verifier/server.py ~/.local/graph-verifier-mcp/
-cp mcp/graph-verifier/run.sh ~/.local/graph-verifier-mcp/
-chmod +x ~/.local/graph-verifier-mcp/run.sh
-```
-
-### 3. Set up the Python venv
-
-```bash
-python3.12 -m venv ~/.local/beads-venv
-~/.local/beads-venv/bin/pip install fastmcp beads-mcp
-```
-
-### 4. Fix the beads-mcp shebang (if needed)
-
-```bash
-bash scripts/fix-beads-shebang.sh
-```
-
-This checks whether `~/.local/beads-venv/bin/beads-mcp` has a broken shebang (pointing to `/tmp/beads-venv/bin/python3`) and rewrites it to the correct path.
-
-### 5. Set API keys
-
-```bash
-export OPENROUTER_API_KEY="sk-or-v1-..."
-export BIG_PICKLE_API_KEY="bp-..."
-```
-
-Add these to your `~/.bashrc`, `~/.zshrc`, or equivalent.
-
-### 6. Start opencode
-
-```bash
-opencode
-```
-
-## How to Verify Everything Works
-
-### Verify MCP servers
-
-In an opencode session (or with `opencode mcp`), check that both MCP servers respond to `tools/list`:
-
-- **beads** — run via `/root/.local/beads-venv/bin/beads-mcp`
-- **graph-verifier** — run via `/root/.local/graph-verifier-mcp/run.sh`
-
-```bash
-opencode mcp list
-```
-
-You should see entries for `beads` and `graph-verifier`.
-
-### Submit a sample graph
-
-Use the `submit_graph` tool with a minimal graph:
-
-```json
-{
-  "nodes": [
-    {
-      "id": "n1",
-      "description": "Verify the codebase structure",
-      "specialist_type": "explorer",
-      "depends_on": [],
-      "expected_tool_calls": 3,
-      "acceptance_criteria": "Report directory layout"
-    }
-  ],
-  "proposed_waves": {"0": ["n1"]}
-}
-```
-
-Expected response: `status: "approved"` with a `graph_id`.
-
-## Architecture
-
-### Graph-Verifier MCP Protocol
-
-The graph-verifier server implements a **mandatory pre-dispatch protocol** that every orchestrator must follow:
-
-```
-┌────────────────────────────────────────────────────┐
-│               Mandatory Sequence                    │
-├────────────────────────────────────────────────────┤
-│ 1. submit_graph(graph)         → approved/rejected │
-│ 2. get_next_wave()             → tickets to dispatch│
-│ 3. report_lane_result(id, ...) → per completed lane │
-│ 4. review_lanes()              → terminate stale    │
-│ 5. Repeat 2-4 until all_complete                    │
-└────────────────────────────────────────────────────┘
-```
-
-**Tools provided:**
-
-| Tool | Description |
-|------|-------------|
-| `submit_graph` | Submit and validate a dependency graph. Validates cycles, dependency integrity, wave correctness, synthetic decomposition, and concurrency ceiling. |
-| `get_next_wave` | Get the next batch of ready-to-execute tickets (dependencies all satisfied). Returns tickets to dispatch as parallel background subagents. |
-| `report_lane_result` | Report the outcome of a completed/failed/terminated lane. |
-| `review_lanes` | Review active lanes and get CONTINUE/TERMINATE recommendations based on budget, duplication, and progress signals. |
+| Tool | Purpose |
+|------|---------|
+| `submit_graph` | Submit and validate a dependency graph (cycle detection, dependency integrity, wave correctness, decomposition checks, concurrency ceiling). |
+| `get_next_wave` | Get the next batch of ready-to-execute tickets whose dependencies are all satisfied. |
+| `report_lane_result` | Report outcome of a completed/failed/terminated lane. |
+| `review_lanes` | Review active lanes for CONTINUE/TERMINATE recommendations based on budget, duplication, and progress signals. |
 | `get_state` | Full state snapshot of a graph — all tickets, waves, statuses, counts. |
 
-### Model Architecture
+**Mandatory sequence:**
 
-| Role | Model | Provider |
-|------|-------|----------|
-| Orchestrator | `moonshotai/kimi-k2.7-code` | OpenRouter |
-| Oracle | `opencode/big-pickle` | Big Pickle |
-| Librarian | `opencode/big-pickle` | Big Pickle |
-| Explorer | `opencode/big-pickle` | Big Pickle |
-| Designer | `opencode/big-pickle` | Big Pickle |
-| Fixer | `opencode/big-pickle` | Big Pickle |
+1. `submit_graph` → if rejected, fix and re-submit
+2. `get_next_wave` → dispatch ALL returned tickets as parallel background subagents
+3. `report_lane_result` as each lane completes
+4. `review_lanes` before next wave → terminate any TERMINATE-recommended lane
+5. Repeat steps 2–4 until `all_complete`
+6. Synthesize results and report
 
-### File Layout
+## Model Choice
 
-```
-~/.config/opencode/
-├── opencode.jsonc                        # Main config with MCP entries
-├── oh-my-opencode-slim.json              # Model presets
-└── oh-my-opencode-slim/
-    └── orchestrator_append.md            # Orchestrator prompt (graph-first)
-
-~/.local/graph-verifier-mcp/
-├── server.py                             # Graph-verifier MCP server
-└── run.sh                                # Launcher script
-
-~/.local/beads-venv/                      # Python venv (fastmcp + beads-mcp)
-```
-
-## Tmux Launcher
-
-For a persistent session, use tmux:
-
-```bash
-tmux new-session -s opencode -d 'opencode'
-tmux attach -t opencode
-```
-
-Or create a session that also tails logs:
-
-```bash
-tmux new-session -s opencode -d
-tmux send-keys -t opencode 'opencode 2> ~/opencode.log' Enter
-tmux attach -t opencode
-```
-
-## Path Notes
-
-The config files use absolute paths (`/root/.local/...`) because opencode's MCP configuration does not expand `~` in command arrays. The install script copies files to these same absolute paths. If your home directory is not `/root` (e.g., `/home/yourname`), edit `~/.config/opencode/opencode.jsonc` and `~/.local/graph-verifier-mcp/run.sh` to use your actual home path.
-
-## Skills
-
-This harness relies on the **oh-my-opencode-slim** plugin, which provides several built-in skills. See [docs/skills.md](docs/skills.md) for the full reference.
-
-The skills (`reflect`, `simplify`, `worktrees`, `deepwork`, `clonedeps`, `codemap`) are fetched automatically from npm when the plugin loads — you do not need to copy them manually. The only custom prompt in this harness is `opencode/oh-my-opencode-slim/orchestrator_append.md`.
+The prompt works with any orchestrator model, but stronger models (Claude Opus/Sonnet, Kimi K2.7, GPT-4.5/5) handle the graph reasoning better than weak models.
 
 ## License
 
