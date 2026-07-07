@@ -215,7 +215,11 @@ def _build_node_map(nodes: list[dict]) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
-def validate_graph(graph: dict, max_concurrency: int) -> dict:
+def validate_graph(
+    graph: dict,
+    max_concurrency: int,
+    valid_specialists: set[str] | None = None,
+) -> dict:
     """
     Validate graph definition. Returns dict with keys:
       - valid: bool
@@ -234,12 +238,13 @@ def validate_graph(graph: dict, max_concurrency: int) -> dict:
         return {"valid": False, "issues": ["No nodes in graph"]}
 
     # -- 6. Specialist type validation --
+    effective_specialists = valid_specialists or VALID_SPECIALISTS
     for n in nodes:
         sp = n.get("specialist_type", "")
-        if sp not in VALID_SPECIALISTS:
+        if sp not in effective_specialists:
             issues.append(
                 f"Node '{n['id']}': invalid specialist_type '{sp}'. "
-                f"Must be one of {sorted(VALID_SPECIALISTS)}"
+                f"Must be one of {sorted(effective_specialists)}"
             )
 
     # -- 1. Cycle detection --
@@ -344,11 +349,11 @@ mcp = FastMCP(
 
 You MUST call this server before dispatching any subagent work. No ticket = no dispatch.
 
-USE PARALLEL BACKGROUND SUBAGENTS. When get_next_wave returns multiple tickets, dispatch ALL simultaneously using the task tool with background=true. Do NOT run sequentially. Do NOT do the work yourself — you orchestrate, you do not execute.
+USE PARALLEL SUBAGENTS. When get_next_wave returns multiple tickets, dispatch ALL returned tickets as parallel subagent tasks. Do NOT run sequentially. Do NOT do the work yourself — you orchestrate, you do not execute.
 
 === MANDATORY SEQUENCE (always follow this order) ===
 1. submit_graph — Submit your dependency graph (nodes + proposed_waves). If rejected, fix issues and re-submit. Do NOT dispatch until approved.
-2. get_next_wave — Get ready tickets. Dispatch ALL of them as PARALLEL BACKGROUND subagents in a single response. Do not stagger them.
+2. get_next_wave — Get ready tickets. Dispatch ALL of them as parallel subagent tasks in a single response. Do not stagger them.
 3. report_lane_result — As each lane completes, report the result back to this server.
 4. review_lanes — Before dispatching the next wave, review active lanes. TERMINATE any lane recommended \"terminate\".
 5. Repeat steps 2-4 until get_next_wave returns all_complete: true.
@@ -384,10 +389,10 @@ Input JSON:
 ],\"proposed_waves\":{\"0\":[\"n1\",\"n2\",\"n3\"],\"1\":[\"n4\"],\"2\":[\"n5\",\"n6\"],\"3\":[\"n7\",\"n8\"]}}
 
 Execution pattern:
-- Wave 0: dispatch n1, n2, n3 as 3 PARALLEL BACKGROUND subagents (explorers + librarian)
+- Wave 0: dispatch n1, n2, n3 as 3 parallel subagent tasks (explorers + librarian)
 - Wave 1: after all 3 complete, dispatch n4 (designer/oracle)
-- Wave 2: after design, dispatch n5 AND n6 as 2 PARALLEL BACKGROUND fixers
-- Wave 3: after both fixers, dispatch n7 AND n8 as PARALLEL BACKGROUND (tests + security review)
+- Wave 2: after design, dispatch n5 AND n6 as 2 parallel fixer tasks
+- Wave 3: after both fixers, dispatch n7 AND n8 as parallel tasks (tests + security review)
 
 === ANTI-PATTERN WARNING ===
 Do NOT submit trivial sequential chains A→B→C→D unless EVERY link has a true data/write-conflict dependency. If 3 research tasks are independent, put them ALL in wave 0 — NOT in a chain. Challenge every node: \"Could this run in parallel with something else?\" If yes, make it parallel.""",
@@ -404,8 +409,8 @@ Do NOT submit trivial sequential chains A→B→C→D unless EVERY link has a tr
         "  - nodes (list, required): each node has:\n"
         "      - id (string): unique node identifier\n"
         "      - description (string): what work this node does\n"
-        "      - specialist_type (string): one of \"explorer\", \"librarian\", "
-        "\"oracle\", \"designer\", \"fixer\"\n"
+        "  - specialist_type (string): one of the configured specialist types "
+        "(default: \"explorer\", \"librarian\", \"oracle\", \"designer\", \"fixer\")\n"
         "      - depends_on (list of strings): node IDs this depends on; "
         "empty list for root/independent nodes\n"
         "      - expected_tool_calls (int): estimated tool-call budget\n"
@@ -414,12 +419,14 @@ Do NOT submit trivial sequential chains A→B→C→D unless EVERY link has a tr
         "  - proposed_waves (object, required): maps wave-number strings to "
         "node-ID lists, e.g. {\"0\":[\"n1\"],\"1\":[\"n2\"]}\n"
         "max_concurrency: optional int, default 8, max 8\n\n"
-        "=== SPECIALIST TYPE ENUM ===\n"
+        "=== SPECIALIST TYPE ENUM (configurable) ===\n"
+        "Default set:\n"
         "- \"explorer\": investigates codebase, finds files, maps structure\n"
         "- \"librarian\": researches docs, best practices, libraries\n"
         "- \"oracle\": makes design decisions, reviews, approves\n"
         "- \"designer\": creates specs, schemas, architecture\n"
-        "- \"fixer\": implements code changes, writes tests\n\n"
+        "- \"fixer\": implements code changes, writes tests\n"
+        "Pass `valid_specialists` to override.\n\n"
         "=== EXAMPLE JSON ===\n"
         '{\"nodes\":[{\"id\":\"n1\",\"description\":\"Search codebase for X\",'
         '\"specialist_type\":\"explorer\",\"depends_on\":[],'
@@ -444,10 +451,12 @@ Do NOT submit trivial sequential chains A→B→C→D unless EVERY link has a tr
 async def submit_graph(
     graph: dict,
     max_concurrency: int = MAX_CONCURRENCY,
+    valid_specialists: list[str] | None = None,
 ) -> dict:
     max_conc = min(max_concurrency, MAX_CONCURRENCY)
+    specialists_set = set(valid_specialists) if valid_specialists else None
 
-    result = validate_graph(graph, max_conc)
+    result = validate_graph(graph, max_conc, specialists_set)
     if not result["valid"]:
         return {
             "status": "rejected",
@@ -529,8 +538,7 @@ async def submit_graph(
         "parallelism_width": len(roots),
         "next_step": (
             "Graph approved. Call get_next_wave with this graph_id, then "
-            "dispatch ALL returned tickets as PARALLEL BACKGROUND subagents "
-            "using the task tool with background=true."
+            "dispatch ALL returned tickets as parallel subagent tasks."
         ),
     }
 
@@ -552,9 +560,9 @@ async def submit_graph(
         "- remaining_pending (int): tickets still pending\n"
         "- all_complete (bool): true if all tickets are done\n\n"
         "CRITICAL: When this returns multiple tickets, dispatch ALL of them "
-        "as PARALLEL BACKGROUND subagents in a single response using the "
-        "task tool with background=true. Do NOT run sequentially. Do NOT "
-        "do the work yourself — you orchestrate, you do not execute."
+        "as parallel subagent tasks in a single response. Do NOT run "
+        "sequentially. Do NOT do the work yourself — you orchestrate, you "
+        "do not execute."
     ),
 )
 async def get_next_wave(
@@ -692,10 +700,8 @@ async def get_next_wave(
         "remaining_pending": remaining_pending,
         "all_complete": all_complete,
         "next_step": (
-            f"Dispatch ALL {len(activated)} ticket(s) as PARALLEL "
-            "BACKGROUND subagents NOW using the task tool with "
-            "background=true. After each completes, call "
-            "report_lane_result."
+            f"Dispatch ALL {len(activated)} ticket(s) as parallel subagent "
+            "tasks NOW. After each completes, call report_lane_result."
         ),
     }
 
@@ -806,7 +812,7 @@ async def report_lane_result(
     elif len(unblocked) > 0:
         result["next_step"] = (
             "New tickets unblocked. Call get_next_wave and dispatch "
-            "as parallel background subagents."
+            "them as parallel subagent tasks."
         )
     return result
 

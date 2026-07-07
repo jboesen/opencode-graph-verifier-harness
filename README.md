@@ -1,15 +1,22 @@
-# Graph Verifier MCP for OpenCode
+# Graph Verifier MCP for AI Coding Tools
 
 ## What This Is
 
-A **graph-verifier MCP server** that forces an OpenCode orchestrator to build a validated dependency graph before dispatching work, and to review lanes for continue/terminate decisions. Includes a prompt file that teaches the orchestrator how to use it.
+A **graph-verifier MCP server** that forces any MCP-compatible coding assistant to build a validated dependency graph before dispatching work, and to review lanes for continue/terminate decisions. Includes prompt files that teach the orchestrator how to use it.
+
+Supported hosts:
+- **OpenCode** (via `opencode.json` + orchestrator system prompt)
+- **Claude Code** (via `claude.jsonc`/`claude_desktop_config.json` + `CLAUDE.md` instructions)
 
 ## Prerequisites
 
 - **OpenCode** with oh-my-opencode-slim plugin (or any OpenCode setup where you can append a prompt and add an MCP server).
+- **Claude Code** (any recent version that supports MCP servers in `claude.jsonc` or `claude_desktop_config.json`).
 - **Python 3.12+** with `fastmcp` installed.
 
 ## Setup
+
+### General MCP Server Setup
 
 1. Copy `mcp/graph-verifier/server.py` and `mcp/graph-verifier/run.sh` to a location on your machine (e.g. `~/.local/graph-verifier-mcp/`).
 
@@ -18,7 +25,9 @@ A **graph-verifier MCP server** that forces an OpenCode orchestrator to build a 
    chmod +x ~/.local/graph-verifier-mcp/run.sh
    ```
 
-3. Add the MCP server to your `opencode.json` or `opencode.jsonc`:
+### OpenCode Setup
+
+1. Add the MCP server to your `opencode.json` or `opencode.jsonc`:
    ```json
    "mcp": {
      "graph-verifier": {
@@ -29,7 +38,24 @@ A **graph-verifier MCP server** that forces an OpenCode orchestrator to build a 
    }
    ```
 
-4. Append the contents of `prompts/orchestrator-graph-verifier.md` to your orchestrator system prompt. If using oh-my-opencode-slim, place it at `~/.config/opencode/oh-my-opencode-slim/orchestrator_append.md`.
+2. Append the contents of `prompts/orchestrator-graph-verifier.md` to your orchestrator system prompt. If using oh-my-opencode-slim, place it at `~/.config/opencode/oh-my-opencode-slim/orchestrator_append.md`.
+
+### Claude Code Setup
+
+1. Add the MCP server to your `claude.jsonc` (project-level) or `claude_desktop_config.json` (global):
+   ```json
+   {
+     "mcpServers": {
+       "graph-verifier": {
+         "type": "local",
+         "command": ["/path/to/graph-verifier-mcp/run.sh"],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+2. Add the contents of `prompts/claude-code-graph-verifier.md` to your `CLAUDE.md` file in the project root (or append it to an existing `CLAUDE.md`).
 
 ## How It Works
 
@@ -52,9 +78,16 @@ The graph-verifier server exposes five tools that form a **mandatory pre-dispatc
 5. Repeat steps 2–4 until `all_complete`
 6. Synthesize results and report
 
+## Files
+
+- `mcp/graph-verifier/server.py` — The MCP server implementation (tool-neutral, works with any MCP host).
+- `mcp/graph-verifier/run.sh` — Startup script that launches the server.
+- `prompts/orchestrator-graph-verifier.md` — Prompt for **OpenCode** (append to orchestrator system prompt).
+- `prompts/claude-code-graph-verifier.md` — Prompt for **Claude Code** (add to `CLAUDE.md`).
+
 ## Model Choice
 
-The prompt works with any orchestrator model, but stronger models (Claude Opus/Sonnet, Kimi K2.7, GPT-4.5/5) handle the graph reasoning better than weak models.
+The prompts work with any orchestrator model, but stronger models (Claude Opus/Sonnet, Kimi K2.7, GPT-4.5/5) handle the graph reasoning better than weak models.
 
 ## License
 
