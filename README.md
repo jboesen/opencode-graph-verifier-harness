@@ -92,7 +92,25 @@ The graph-verifier server exposes five tools that form a **mandatory pre-dispatc
 ## Interactive graph board
 
 After `submit_graph` approves a graph, call `open_graph_view` with its `graph_id`.
-It returns a localhost URL (default: `http://127.0.0.1:8765`) that shows the graph as draggable cards connected by dependency arrows. Cards are laid out by wave, status colors update as lanes are reported, and the board refreshes automatically. The viewer binds only to `127.0.0.1`.
+It returns a localhost URL (default: `http://127.0.0.1:8765`) that shows the graph as draggable, hand-drawn-style cards connected by dependency arrows. Cards are laid out by wave, status colors update as lanes are reported, and the board refreshes automatically. The viewer binds only to `127.0.0.1`.
+
+Each card shows a short auto-derived title (or an explicit `title` you set on the node) instead of the raw node id, so boards built from generic ids like `n1`/`n2` still read as real task names.
+
+### Annotate a node → run an agent
+
+Every card has a text box and a **Run agent** button. Typing a note and clicking Run:
+
+1. Sends the annotation to the server, which stores it on that node's ticket.
+2. Spawns `GRAPH_VERIFIER_AGENT_CMD` (default: `claude -p`) in the background, with the node's description/acceptance-criteria/context-hints plus your annotation as the prompt.
+3. Captures stdout/stderr and shows `running` → `done`/`error` plus the output directly on the card. This is also visible via `get_state` as `agent_run_status` / `agent_run_output` on each ticket.
+
+This spawns a **new, independent** agent process — it cannot resume this orchestrator's own conversation (no CLI exposes that), but it gets the full ticket context plus your note as a fresh prompt. Set `GRAPH_VERIFIER_AGENT_CMD` to whatever agent CLI is actually installed, e.g.:
+
+```json
+"environment": { "GRAPH_VERIFIER_AGENT_CMD": "opencode run" }
+```
+
+If the command isn't found, the card shows a clear "command not found" error instead of hanging.
 
 ## Files
 

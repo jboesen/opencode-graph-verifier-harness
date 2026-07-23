@@ -3,7 +3,11 @@
 
 import asyncio
 import logging
+import os
+import shlex
+import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -11,6 +15,13 @@ from typing import Any
 
 from fastmcp import FastMCP
 from graph_view import start_graph_view
+
+# Command used to run an agent against a node's annotation. Configurable via
+# env var so either a `claude` CLI (once installed) or another agent CLI
+# (e.g. `opencode run`) can be used. The prompt text is appended as the final
+# argument.
+AGENT_CMD = os.environ.get("GRAPH_VERIFIER_AGENT_CMD", "claude -p")
+AGENT_RUN_TIMEOUT_SECONDS = 600
 
 # ---------------------------------------------------------------------------
 # Logging — all to stderr (stdout is JSON-RPC)
@@ -42,12 +53,17 @@ class Ticket:
     acceptance_criteria: str
     context_hints: str
     wave: int
+    title: str = ""
     status: str = "pending"  # pending | active | completed | failed | terminated
     active_since: float | None = None
     completed_at: float | None = None
     result: dict | None = None
     tool_calls_used: int = 0
     error: str | None = None
+    # Board-driven "annotate a node -> run an agent" feature (see graph_view.py)
+    annotation: str = ""
+    agent_run_status: str | None = None  # None | running | done | error
+    agent_run_output: str | None = None
 
 
 @dataclass
@@ -209,6 +225,103 @@ def _compute_earliest_wave(nodes: list[dict]) -> dict[str, int]:
 
 def _build_node_map(nodes: list[dict]) -> dict[str, dict]:
     return {n["id"]: n for n in nodes}
+
+
+def _auto_title(description: str, fallback_id: str, max_words: int = 7) -> str:
+    """Derive a short human-readable title from a node's description.
+
+    Callers may pass an explicit ``title`` on a node instead; this is only
+    the fallback so boards never show a bare "n1"/"n2" style id as the
+    headline of a card.
+    """
+    text = (description or "").strip()
+    if not text:
+        return fallback_id
+    words = text.split()
+    title = " ".join(words[:max_words])
+    if len(words) > max_words:
+        title += "…"
+    return title
+
+
+def _find_ticket_by_node(state: GraphState, node_id: str) -> Ticket | None:
+    for ticket in state.tickets.values():
+        if ticket.node_id == node_id:
+            return ticket
+    return None
+
+
+def _set_annotation(graph_id: str, node_id: str, text: str) -> dict:
+    state = graphs.get(graph_id)
+    if state is None:
+        return {"error": f"graph_id '{graph_id}' not found"}
+    ticket = _find_ticket_by_node(state, node_id)
+    if ticket is None:
+        return {"error": f"node '{node_id}' not found"}
+    ticket.annotation = text or ""
+    return {"ok": True}
+
+
+def _run_agent_on_node(graph_id: str, node_id: str) -> dict:
+    """Kick off a background agent run against a node's current annotation.
+
+    Spawns AGENT_CMD (default: `claude -p`, override via
+    GRAPH_VERIFIER_AGENT_CMD) with the ticket's context + the user's
+    annotation as the final argument, and stores status/output on the
+    ticket so the board can poll it via the normal graph-state endpoint.
+    """
+    state = graphs.get(graph_id)
+    if state is None:
+        return {"error": f"graph_id '{graph_id}' not found"}
+    ticket = _find_ticket_by_node(state, node_id)
+    if ticket is None:
+        return {"error": f"node '{node_id}' not found"}
+    if not ticket.annotation.strip():
+        return {"error": "add an annotation before running an agent"}
+    if ticket.agent_run_status == "running":
+        return {"error": "an agent is already running for this node"}
+
+    prompt = (
+        f"You are assisting with one lane of a task graph.\n"
+        f"Node: {ticket.node_id} — {ticket.title or ticket.node_id}\n"
+        f"Description: {ticket.description}\n"
+        f"Specialist type: {ticket.specialist_type}\n"
+        f"Acceptance criteria: {ticket.acceptance_criteria}\n"
+        f"Context hints: {ticket.context_hints}\n\n"
+        f"User annotation / instruction:\n{ticket.annotation}\n"
+    )
+
+    ticket.agent_run_status = "running"
+    ticket.agent_run_output = None
+
+    def _worker() -> None:
+        try:
+            cmd = [*shlex.split(AGENT_CMD), prompt]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=AGENT_RUN_TIMEOUT_SECONDS,
+            )
+            output = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+            ticket.agent_run_status = "done" if proc.returncode == 0 else "error"
+            ticket.agent_run_output = output[-8000:] or "(no output)"
+        except FileNotFoundError:
+            ticket.agent_run_status = "error"
+            ticket.agent_run_output = (
+                f"command not found: '{shlex.split(AGENT_CMD)[0]}'. "
+                "Set GRAPH_VERIFIER_AGENT_CMD to an agent CLI installed on "
+                "this machine (e.g. 'opencode run')."
+            )
+        except subprocess.TimeoutExpired:
+            ticket.agent_run_status = "error"
+            ticket.agent_run_output = f"timed out after {AGENT_RUN_TIMEOUT_SECONDS}s"
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the board
+            ticket.agent_run_status = "error"
+            ticket.agent_run_output = str(exc)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"ok": True, "status": "running"}
 
 
 def _serialize_state(state: GraphState) -> dict:
@@ -446,6 +559,9 @@ Do NOT submit trivial sequential chains A→B→C→D unless EVERY link has a tr
         "(default: \"explorer\", \"librarian\", \"oracle\", \"designer\", \"fixer\")\n"
         "      - depends_on (list of strings): node IDs this depends on; "
         "empty list for root/independent nodes\n"
+        "      - title (string, optional): short human-readable label for "
+        "the board. If omitted, one is auto-derived from the description "
+        "so the board never shows a bare id like 'n1' as the headline.\n"
         "      - expected_tool_calls (int): estimated tool-call budget\n"
         "      - acceptance_criteria (string): what constitutes completion\n"
         "      - context_hints (string, optional): guidance for the subagent\n"
@@ -517,17 +633,19 @@ async def submit_graph(
             if node is None:
                 continue
             tid = f"t-{uuid.uuid4().hex[:8]}"
+            description = node.get("description", "")
             ticket = Ticket(
                 id=tid,
                 node_id=nid,
                 graph_id=graph_id,
-                description=node.get("description", ""),
+                description=description,
                 specialist_type=node.get("specialist_type", ""),
                 depends_on=list(node.get("depends_on", [])),
                 expected_tool_calls=node.get("expected_tool_calls", 1),
                 acceptance_criteria=node.get("acceptance_criteria", ""),
                 context_hints=node.get("context_hints", ""),
                 wave=w_num,
+                title=node.get("title") or _auto_title(description, nid),
             )
             tickets[tid] = ticket
 
@@ -549,6 +667,7 @@ async def submit_graph(
             {
                 "id": ticket.id,
                 "node_id": ticket.node_id,
+                "title": ticket.title,
                 "description": ticket.description,
                 "specialist_type": ticket.specialist_type,
                 "depends_on": ticket.depends_on,
@@ -704,6 +823,7 @@ async def get_next_wave(
             {
                 "id": ticket.id,
                 "node_id": ticket.node_id,
+                "title": ticket.title,
                 "description": ticket.description,
                 "specialist_type": ticket.specialist_type,
                 "expected_tool_calls": ticket.expected_tool_calls,
@@ -1039,7 +1159,14 @@ async def get_state(graph_id: str) -> dict:
     description=(
         "Start a local interactive graph board for a submitted graph and "
         "return its URL. It visualizes task cards, dependency arrows, waves, "
-        "and live lane status."
+        "and live lane status.\n\n"
+        "Each card also has an annotation box: a user can type a note/"
+        "instruction directly on a node and click 'Run agent' to spawn "
+        f"AGENT_CMD (default '{AGENT_CMD}', override via "
+        "GRAPH_VERIFIER_AGENT_CMD) with the node's context + that "
+        "annotation as the prompt. Status ('running'/'done'/'error') and "
+        "captured output show up on the card and are also visible via "
+        "get_state (agent_run_status / agent_run_output fields per ticket)."
     ),
 )
 async def open_graph_view(graph_id: str, port: int = 8765) -> dict:
@@ -1047,7 +1174,13 @@ async def open_graph_view(graph_id: str, port: int = 8765) -> dict:
         return {"error": f"graph_id '{graph_id}' not found"}
     if not 1024 <= port <= 65535:
         return {"error": "port must be between 1024 and 65535"}
-    url = start_graph_view(_get_view_graph, _list_view_graphs, port)
+    url = start_graph_view(
+        _get_view_graph,
+        _list_view_graphs,
+        _set_annotation,
+        _run_agent_on_node,
+        port,
+    )
     return {
         "url": f"{url}/?graph_id={graph_id}",
         "graph_id": graph_id,
