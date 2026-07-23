@@ -14,11 +14,21 @@ Supported hosts:
 - **Claude Code** (any recent version that supports MCP servers in `claude.jsonc` or `claude_desktop_config.json`).
 - **Python 3.12+** with `fastmcp` installed.
 
+To keep the MCP isolated, a project virtual environment is a convenient setup:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install fastmcp
+```
+
+When using that environment, set `GRAPH_VERIFIER_PYTHON` to its interpreter in
+your MCP host configuration (for example, `"GRAPH_VERIFIER_PYTHON": "/absolute/path/to/.venv/bin/python"`).
+
 ## Setup
 
 ### General MCP Server Setup
 
-1. Copy `mcp/graph-verifier/server.py` and `mcp/graph-verifier/run.sh` to a location on your machine (e.g. `~/.local/graph-verifier-mcp/`).
+1. Copy the complete `mcp/graph-verifier/` directory to a location on your machine (e.g. `~/.local/graph-verifier-mcp/`). It includes the optional visual board alongside the MCP server.
 
 2. Make `run.sh` executable:
    ```bash
@@ -68,6 +78,7 @@ The graph-verifier server exposes five tools that form a **mandatory pre-dispatc
 | `report_lane_result` | Report outcome of a completed/failed/terminated lane. |
 | `review_lanes` | Review active lanes for CONTINUE/TERMINATE recommendations based on budget, duplication, and progress signals. |
 | `get_state` | Full state snapshot of a graph — all tickets, waves, statuses, counts. |
+| `open_graph_view` | Starts a local interactive execution board and returns a browser URL. |
 
 **Mandatory sequence:**
 
@@ -77,6 +88,11 @@ The graph-verifier server exposes five tools that form a **mandatory pre-dispatc
 4. `review_lanes` before next wave → terminate any TERMINATE-recommended lane
 5. Repeat steps 2–4 until `all_complete`
 6. Synthesize results and report
+
+## Interactive graph board
+
+After `submit_graph` approves a graph, call `open_graph_view` with its `graph_id`.
+It returns a localhost URL (default: `http://127.0.0.1:8765`) that shows the graph as draggable cards connected by dependency arrows. Cards are laid out by wave, status colors update as lanes are reported, and the board refreshes automatically. The viewer binds only to `127.0.0.1`.
 
 ## Files
 

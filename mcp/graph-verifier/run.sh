@@ -1,2 +1,5 @@
 #!/usr/bin/env bash
-exec /root/.local/beads-venv/bin/python3 /root/.local/graph-verifier-mcp/server.py "$@"
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "${GRAPH_VERIFIER_PYTHON:-python3}" "$SCRIPT_DIR/server.py" "$@"

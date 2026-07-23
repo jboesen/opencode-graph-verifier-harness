@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from fastmcp import FastMCP
+from graph_view import start_graph_view
 
 # ---------------------------------------------------------------------------
 # Logging — all to stderr (stdout is JSON-RPC)
@@ -208,6 +209,38 @@ def _compute_earliest_wave(nodes: list[dict]) -> dict[str, int]:
 
 def _build_node_map(nodes: list[dict]) -> dict[str, dict]:
     return {n["id"]: n for n in nodes}
+
+
+def _serialize_state(state: GraphState) -> dict:
+    """Return graph data in a stable form for the state tool and web view."""
+    tickets = [asdict(ticket) for ticket in state.tickets.values()]
+    status_counts: dict[str, int] = {}
+    for ticket in state.tickets.values():
+        status_counts[ticket.status] = status_counts.get(ticket.status, 0) + 1
+    return {
+        "graph_id": state.graph_id,
+        "created_at": state.created_at,
+        "warnings": state.warnings,
+        "max_concurrency": state.max_concurrency,
+        "waves": {str(key): value for key, value in state.waves.items()},
+        "tickets": tickets,
+        "status_counts": status_counts,
+        "total_tickets": len(tickets),
+    }
+
+
+def _get_view_graph(graph_id: str) -> dict | None:
+    state = graphs.get(graph_id)
+    return _serialize_state(state) if state else None
+
+
+def _list_view_graphs() -> list[dict]:
+    return [
+        {"graph_id": state.graph_id, "created_at": state.created_at,
+         "total_tickets": len(state.tickets)}
+        for state in sorted(graphs.values(), key=lambda item: item.created_at,
+                            reverse=True)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -998,43 +1031,27 @@ async def get_state(graph_id: str) -> dict:
     state = graphs.get(graph_id)
     if state is None:
         return {"error": f"graph_id '{graph_id}' not found"}
+    return _serialize_state(state)
 
-    ticket_list = []
-    for tid, ticket in state.tickets.items():
-        ticket_list.append(
-            {
-                "id": ticket.id,
-                "node_id": ticket.node_id,
-                "description": ticket.description,
-                "specialist_type": ticket.specialist_type,
-                "depends_on": ticket.depends_on,
-                "expected_tool_calls": ticket.expected_tool_calls,
-                "acceptance_criteria": ticket.acceptance_criteria,
-                "context_hints": ticket.context_hints,
-                "wave": ticket.wave,
-                "status": ticket.status,
-                "active_since": ticket.active_since,
-                "completed_at": ticket.completed_at,
-                "tool_calls_used": ticket.tool_calls_used,
-                "error": ticket.error,
-                "result": ticket.result,
-            }
-        )
 
-    # Status counts
-    status_counts: dict[str, int] = {}
-    for t in state.tickets.values():
-        status_counts[t.status] = status_counts.get(t.status, 0) + 1
-
+@mcp.tool(
+    name="open_graph_view",
+    description=(
+        "Start a local interactive graph board for a submitted graph and "
+        "return its URL. It visualizes task cards, dependency arrows, waves, "
+        "and live lane status."
+    ),
+)
+async def open_graph_view(graph_id: str, port: int = 8765) -> dict:
+    if graph_id not in graphs:
+        return {"error": f"graph_id '{graph_id}' not found"}
+    if not 1024 <= port <= 65535:
+        return {"error": "port must be between 1024 and 65535"}
+    url = start_graph_view(_get_view_graph, _list_view_graphs, port)
     return {
-        "graph_id": state.graph_id,
-        "created_at": state.created_at,
-        "warnings": state.warnings,
-        "max_concurrency": state.max_concurrency,
-        "waves": {str(k): v for k, v in state.waves.items()},
-        "tickets": ticket_list,
-        "status_counts": status_counts,
-        "total_tickets": len(state.tickets),
+        "url": f"{url}/?graph_id={graph_id}",
+        "graph_id": graph_id,
+        "next_step": "Open the URL in a browser. The board refreshes every 2 seconds.",
     }
 
 
